@@ -191,8 +191,7 @@ class EB_imkl(IntelBase):
             lis1 = ['fftw2xc', 'fftw2xf']
             lis2 = ['fftw3xc', 'fftw3xf']
             lis3 = []
-            if LooseVersion(self.version) < LooseVersion('11.1'):
-                lis3 = ['fftw2x_cdft', 'fftw3x_cdft']
+            lis3 = ['fftw2x_cdft', 'fftw3x_cdft']
 
             interfacedir = os.path.join(self.installdir, 'mkl/interfaces')
             try:
