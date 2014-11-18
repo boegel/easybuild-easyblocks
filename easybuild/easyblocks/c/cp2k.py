@@ -262,6 +262,8 @@ class EB_CP2K(EasyBlock):
         # some mem-bandwidth optimisation
         if self.cfg['type'] == 'psmp':
             self.openmp = self.toolchain.get_flag('openmp')
+            if self.toolchain.mpi_family() == toolchain.INTELMPI:
+                self.openmp += ' -mt_mpi'
 
         # determine which opt flags to use
         if self.cfg['typeopt']:
