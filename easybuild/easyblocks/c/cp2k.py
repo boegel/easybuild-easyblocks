@@ -529,7 +529,11 @@ class EB_CP2K(EasyBlock):
 
         options['DFLAGS'] += ' -D__FFTW3'
 
-        options['LIBS'] += ' -L%s -lfftw3' % os.path.join(os.getenv('EBROOTFFTW'), 'lib')
+        if self.cfg['type'] == 'psmp':
+            fftw_lib = 'fftw3_omp'
+        else:
+            fftw_lib = 'fftw3'
+        options['LIBS'] += ' -L%s -l%s' % (os.path.join(os.getenv('EBROOTFFTW'), 'lib'), fftw_lib)
 
         return options
 
