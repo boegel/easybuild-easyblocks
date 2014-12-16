@@ -42,7 +42,8 @@ import glob
 import easybuild.tools.environment as env
 from easybuild.framework.easyblock import EasyBlock
 from easybuild.framework.easyconfig import CUSTOM
-from easybuild.tools.filetools import rmtree2, run_cmd
+from easybuild.tools.filetools import rmtree2
+from easybuild.tools.run import run_cmd
 
 # required for deprecated log in static function (ie no self)
 from easybuild.framework.easyconfig.licenses import License
@@ -96,6 +97,9 @@ class IntelBase(EasyBlock):
         self.setup_local_home_subdir()
         self.clean_home_subdir()
 
+        if self.cfg._config['license'][0] is not None:
+            _log.deprecated('No old style license parameter, use license_file', '2.0')
+
     @staticmethod
     def extra_options(extra_vars=None):
         extra_vars = dict(EasyBlock.extra_options(extra_vars))
@@ -110,7 +114,6 @@ class IntelBase(EasyBlock):
         })
 
         # Support for old easyconfigs with license parameter
-        _log.deprecated('No old style license parameter, use license_file', '2.0')
         extra_vars.update({'license': [None, "License file", CUSTOM]})
 
         return EasyBlock.extra_options(extra_vars)
@@ -342,6 +345,27 @@ class IntelBase(EasyBlock):
         # perform installation
         cmd = "./install.sh %s -s %s" % (tmppathopt, silentcfg)
         return run_cmd(cmd, log_all=True, simple=True)
+
+    def move_after_install(self):
+        """Move installed files to correct location after installation."""
+        subdir = os.path.join(self.installdir, self.name, self.version)
+        self.log.debug("Moving contents of %s to %s" % (subdir, self.installdir))
+        try:
+            # remove senseless symlinks, e.g. impi_5.0.1 and impi_latest
+            majver = '.'.join(self.version.split('.')[:-1])
+            for symlink in ['%s_%s' % (self.name, majver), '%s_latest' % self.name]:
+                symlink_fp = os.path.join(self.installdir, symlink)
+                if os.path.exists(symlink_fp):
+                    os.remove(symlink_fp)
+            # move contents of 'impi/<version>' dir to installdir
+            for fil in os.listdir(subdir):
+                source = os.path.join(subdir, fil)
+                target = os.path.join(self.installdir, fil)
+                self.log.debug("Moving %s to %s" % (source, target))
+                shutil.move(source, target)
+            shutil.rmtree(os.path.join(self.installdir, self.name))
+        except OSError, err:
+            self.log.error("Failed to move contents of %s to %s: %s" % (subdir, self.installdir, err))
 
     def cleanup_step(self):
         """Cleanup leftover mess
