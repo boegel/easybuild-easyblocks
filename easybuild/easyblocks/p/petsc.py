@@ -125,9 +125,9 @@ class EB_PETSc(ConfigureMake):
 
             # Complex number suppport
             if self.cfg['with_complex']:
-                    self.cfg.update('configopts', '--with-scalar-type=complex')
+                self.cfg.update('configopts', '--with-scalar-type=complex')
 
-            # Python extensions_step
+            # Python extensions
             if get_software_root('Python'):
                 self.cfg.update('configopts', '--with-numpy=1')
                 if self.cfg['shared_libs']:
@@ -317,18 +317,8 @@ class EB_PETSc(ConfigureMake):
         else:
             libext = "a"
 
-        if LooseVersion(self.version) < LooseVersion("3.6"):
-            custom_paths = {
-                            'files': [os.path.join(prefix2, "lib", "libpetsc.%s" % libext)],
-                            'dirs': [os.path.join(prefix1, "bin"), os.path.join(prefix2, "conf"),
-                                 os.path.join(prefix1, "include"), os.path.join(prefix2, "include")]
-                           }
-        else:
-            custom_paths = {
-                            'files': [os.path.join(prefix2, "lib", "libpetsc.%s" % libext)],
-                            'dirs': [os.path.join(prefix1, "bin"), 
-                                 os.path.join(prefix1, "include"), os.path.join(prefix2, "include")]
-                           }
-
-
+        custom_paths = {
+            'files': [os.path.join(prefix2, 'lib', 'libpetsc.%s' % libext)],
+            'dirs': [os.path.join(prefix1, 'bin'), os.path.join(prefix1, 'include'), os.path.join(prefix2, 'include')],
+        }
         super(EB_PETSc, self).sanity_check_step(custom_paths=custom_paths)
