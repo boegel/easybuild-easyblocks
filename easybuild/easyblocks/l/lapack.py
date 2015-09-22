@@ -31,10 +31,10 @@ EasyBuild support for building and installing LAPACK, implemented as an easybloc
 @author: Pieter De Baets (Ghent University)
 @author: Jens Timmerman (Ghent University)
 """
-
 import glob
 import os
 import shutil
+from distutils.version import LooseVersion
 
 import easybuild.tools.toolchain as toolchain
 from easybuild.easyblocks.generic.configuremake import ConfigureMake
@@ -144,7 +144,8 @@ class EB_LAPACK(ConfigureMake):
             self.cfg.update('buildopts', 'lib')
 
 
-        if os.path.exists(os.path.join(self.cfg['start_dir'], 'lapacke')):
+        # also build LAPACKE C interface to LAPACK if available, see http://www.netlib.org/lapack/lapacke.html
+        if LooseVersion(self.version) >= LooseVersion('3.4.0'):
             self.cfg.update('buildopts', 'lapackelib')
 
     # don't create a module if we're only testing
@@ -234,9 +235,11 @@ class EB_LAPACK(ConfigureMake):
         Custom sanity check for LAPACK (only run when not testing)
         """
         if not self.cfg['test_only']:
+            libs = ['liblapack.a', 'libtmglib.a']
+            if LooseVersion(self.version) >= LooseVersion('3.4.0'):
+                libs.append('liblapacke.a')
             custom_paths = {
-                            'files': ["lib/%s" % x for x in ["liblapack.a", "libtmglib.a"]],
-                            'dirs': []
-                           }
-
+                'files': [os.path.join('lib', lib) for lib in libs],
+                'dirs': [],
+            }
             super(EB_LAPACK, self).sanity_check_step(custom_paths=custom_paths)
