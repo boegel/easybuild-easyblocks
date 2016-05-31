@@ -35,20 +35,27 @@ import shutil
 
 import easybuild.tools.environment as env
 from easybuild.framework.easyblock import EasyBlock
+from easybuild.framework.easyconfig import CUSTOM
 from easybuild.tools.build_log import EasyBuildError
+from easybuild.tools.filetools import read_file
 from easybuild.tools.run import run_cmd
 
 
 class EB_FSL(EasyBlock):
     """Support for building and installing FSL."""
 
+    @staticmethod
+    def extra_options():
+        extra_vars = {
+            'with_fslview': [False, "Also build and install FSLview", CUSTOM],
+        }
+        return EasyBlock.extra_options(extra_vars)
+
+
     def __init__(self,*args,**kwargs):
         """Specify building in install dir, initialize custom variables."""
-
         super(EB_FSL, self).__init__(*args, **kwargs)
-
         self.build_in_installdir = True
-
         self.fsldir = None
 
     def configure_step(self):
@@ -87,14 +94,22 @@ class EB_FSL(EasyBlock):
         run_cmd(cmd, log_all=True, simple=True)
 
         # check build.log file for success
-        buildlog = os.path.join(self.installdir, "fsl", "build.log")
-        f = open(buildlog, "r")
-        txt = f.read()
-        f.close()
+        buildlog = os.path.join(self.fsldir, 'build.log')
+        txt = read_file(buildlog)
 
         error_regexp = re.compile("ERROR in BUILD")
         if error_regexp.search(txt):
             raise EasyBuildError("Error detected in build log %s.", buildlog)
+
+        if self.cfg['with_fslview']:
+            # see http://fsl.fmrib.ox.ac.uk/fsl/fslwiki/FslInstallation/SourceCode/FslView
+            try:
+                cwd = os.getcwd()
+                os.chdir(os.path.join(self.fsldir, 'src', 'fslview'))
+                os.chdir(cwd)
+
+            except OSError, err:
+                raise EasyBuildError("Building and installing fslview failed: %s", err)
 
     def install_step(self):
         """Building was performed in install dir, no explicit install step required."""
