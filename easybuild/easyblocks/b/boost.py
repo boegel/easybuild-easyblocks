@@ -166,6 +166,9 @@ class EB_Boost(EasyBlock):
             if libroot:
                 bjamoptions += " -s%s_INCLUDE=%s/include" % (lib.upper(), libroot)
                 bjamoptions += " -s%s_LIBPATH=%s/lib" % (lib.upper(), libroot)
+            else:
+                # hard disable if corresponding dep is not included
+                bjamoptions += " -NO_%s" % lib.upper()
 
         if self.cfg['boost_mpi']:
             self.log.info("Building boost_mpi library")
