@@ -50,6 +50,7 @@ class CrayToolchain(Bundle):
         # collect 'swap' statement for dependencies (except PrgEnv)
         swap_deps = []
         for dep in self.toolchain.dependencies:
+            print dep
             mod_name = dep['full_mod_name']
             # determine versionless module name, e.g. 'fftw/3.3.4.1' => 'fftw'
             dep_name = '/'.join(mod_name.split('/')[:-1])
@@ -74,4 +75,5 @@ class CrayToolchain(Bundle):
         prgenv_load = self.module_generator.load_module(prgenv_mod, recursive_unload=False)
 
         txt = '\n'.join(prgenv_unloads + [prgenv_load] + swap_deps)
+        print txt
         return txt
