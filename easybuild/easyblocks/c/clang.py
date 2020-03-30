@@ -86,7 +86,6 @@ class EB_Clang(CMakeMake):
             # The sanitizer tests often fail on HPC systems due to the 'weird' environment.
             'skip_sanitizer_tests': [True, "Do not run the sanitizer tests", CUSTOM],
         })
-        extra_vars['build_type'][0] = 'Release'
         # disable regular out-of-source build, too simplistic for Clang to work
         extra_vars['separate_build_dir'][0] = False
         return extra_vars
@@ -334,6 +333,7 @@ class EB_Clang(CMakeMake):
         options += "-DCMAKE_C_COMPILER='%s' " % CC
         options += "-DCMAKE_CXX_COMPILER='%s' " % CXX
         options += self.cfg['configopts']
+        options += "-DCMAKE_BUILD_TYPE=%s" % self.build_type
 
         self.log.info("Configuring")
         run_cmd("cmake %s %s" % (options, self.llvm_src_dir), log_all=True)
