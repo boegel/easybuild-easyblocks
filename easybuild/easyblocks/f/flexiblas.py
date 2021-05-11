@@ -33,7 +33,6 @@ from easybuild.easyblocks.generic.cmakemake import CMakeMake
 from easybuild.framework.easyconfig import CUSTOM
 from easybuild.tools.build_log import EasyBuildError
 from easybuild.tools.config import build_option
-from easybuild.tools.environment import setvar
 from easybuild.tools.run import run_cmd
 from easybuild.tools.systemtools import get_shared_lib_ext
 
@@ -166,4 +165,3 @@ class EB_FlexiBLAS(CMakeMake):
             custom_commands.append("flexiblas list | grep %s" % blas_lib.upper())
 
         super(EB_FlexiBLAS, self).sanity_check_step(custom_paths=custom_paths, custom_commands=custom_commands)
-
