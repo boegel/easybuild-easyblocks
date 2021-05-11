@@ -104,20 +104,21 @@ class EB_FlexiBLAS(CMakeMake):
         if build_option('rpath'):
             self.cfg['abs_path_compilers'] = True
 
-            # inject RPATH link option for build location of libflexiblas.so.3,
-            # to ensure that test binaries can find the FlexiBLAS library
-            build_libdir = os.path.join(builddir, 'lib')
-            for envvar in ['CFLAGS', 'CXXFLAGS', 'FFLAGS']:
-                flags = os.getenv(envvar)
-                setvar(envvar, '-Wl,-rpath=%s %s' % (build_libdir, flags))
-
         super(EB_FlexiBLAS, self).configure_step(builddir=builddir)
 
     def test_step(self):
         """Run tests using each of the backends."""
 
+        additional_pretestopts = ''
+        if build_option('rpath'):
+            # inject build location of libflexiblas.so.3,
+            # to ensure that test binaries can find the FlexiBLAS library
+            build_libdir = os.path.join(self.builddir, 'easybuild_obj', 'lib')
+            additional_pretestopts = "LD_LIBRARY_PATH=%s:$LD_LIBRARY_PATH" % build_libdir
+
         # run tests with default backend (NETLIB)
         test_cmd = ' '.join([
+            additional_pretestopts,
             self.cfg['pretestopts'],
             "make test",
             self.cfg['testopts'],
@@ -126,6 +127,7 @@ class EB_FlexiBLAS(CMakeMake):
 
         for blas_lib in self.blas_libs:
             test_cmd = ' '.join([
+                additional_pretestopts,
                 self.cfg['pretestopts'],
                 "FLEXIBLAS_DEFAULT='%s'" % blas_lib,
                 "make test",
@@ -164,3 +166,4 @@ class EB_FlexiBLAS(CMakeMake):
             custom_commands.append("flexiblas list | grep %s" % blas_lib.upper())
 
         super(EB_FlexiBLAS, self).sanity_check_step(custom_paths=custom_paths, custom_commands=custom_commands)
+
