@@ -759,6 +759,12 @@ class PythonPackage(ExtensionEasyBlock):
         Custom sanity check for Python packages
         """
 
+        # some commands run below require that dependencies are loaded,
+        # so we might as well load the module here already when using --sanity-check-only
+        # (as opposed to waiting until parent sanity_check_step method is called)
+        if build_option('sanity_check_only') and not self.is_extension:
+            self.load_module()
+
         success, fail_msg = True, ''
 
         # don't add user site directory to sys.path (equivalent to python -s)
