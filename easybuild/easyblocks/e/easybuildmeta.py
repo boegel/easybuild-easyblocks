@@ -28,6 +28,7 @@ EasyBuild support for installing EasyBuild, implemented as an easyblock
 @author: Kenneth Hoste (UGent)
 """
 import copy
+import glob
 import os
 import re
 import sys
@@ -38,7 +39,8 @@ from easybuild.tools.build_log import EasyBuildError
 from easybuild.tools.filetools import read_file
 from easybuild.tools.modules import get_software_root_env_var_name
 from easybuild.tools.py2vs3 import OrderedDict
-from easybuild.tools.utilities import flatten
+from easybuild.tools.run import run_cmd
+from easybuild.tools.utilities import flatten, nub
 
 
 # note: we can't use EB_EasyBuild as easyblock name, as that would require an easyblock named 'easybuild.py',
@@ -236,6 +238,60 @@ class EB_EasyBuildMeta(PythonPackage):
 
         super(EB_EasyBuildMeta, self).sanity_check_step(custom_paths=custom_paths, custom_commands=custom_commands)
 
+    def check_eb_import(self):
+        """
+        Check if easybuild.framework module can be imported when $PYTHONPATH is updated as module will.
+        If not, then the individual easybuild-* packages probably were installed as .egg directories,
+        and the easy-install.pth installed by setuptools is not being picked up,
+        so we need to add the path to the .egg subdirectories to $PYTHONPATH ourselves...
+        """
+        txt = ''
+
+        # construct $PYTHONPATH to use to run import check with
+        pythonpaths = [os.path.join(self.installdir, x) for x in self.all_pylibdirs]
+        env_pythonpath = os.getenv('PYTHONPATH')
+        if env_pythonpath:
+            pythonpaths.append(env_pythonpath)
+        pythonpaths = nub(pythonpaths)
+
+        # construct template command where $PYTHONPATH value to use can be injected into
+        eb_import_check = 'easybuild.framework'
+        eb_import_check_worked = False
+        cmd_template = ' '.join([
+            "PYTHONPATH=%(pythonpath)s",
+            self.python_cmd,
+            "-c 'import %s'" % eb_import_check,
+        ])
+
+        pythonpath = ':'.join(pythonpaths)
+        _, ec = run_cmd(cmd_template % {'pythonpath': pythonpath}, log_all=False, log_ok=False)
+        if ec == 0:
+            eb_import_check_worked = True
+            self.log.info("Importing '%s' worked with normal $PYTHONPATH update: %s", eb_import_check, pythonpath)
+        else:
+            full_pylibdir = os.path.join(self.installdir, self.pylibdir)
+            egg_subdirs = glob.glob(os.path.join(full_pylibdir, '*.egg'))
+            # if import failed, check whether adding path to .egg directories to $PYTHONPATH helps
+            self.log.info("Importing '%s' failed, may need to add path to .egg directories to $PYTHONPATH: %s",
+                          eb_import_check, ':'.join(egg_subdirs))
+            if egg_subdirs:
+                pythonpath = ':'.join(egg_subdirs + pythonpaths)
+                _, ec = run_cmd(cmd_template % {'pythonpath': pythonpath}, log_all=False, log_ok=False)
+                if ec == 0:
+                    self.log.info("Importing '%s' worked after adding .egg subdirectories to $PYTHONPATH: %s",
+                                  eb_import_check, pythonpath)
+                    eb_import_check_worked = True
+                    relative_egg_subdirs = [p[len(self.installdir):].lstrip('/') for p in egg_subdirs]
+                    txt += self.module_generator.prepend_paths('PYTHONPATH', relative_egg_subdirs)
+                else:
+                    self.log.warning("Importing '%s' failed after adding .egg subdirectories to $PYTHONPATH: %s",
+                                     eb_import_check, pythonpath)
+
+        if not eb_import_check_worked:
+            raise EasyBuildError("Importing '%s' still fails despite updates to $PYTHONPATH?!", eb_import_check)
+
+        return txt
+
     def make_module_extra(self):
         """
         Set $EB_INSTALLPYTHON to ensure that this EasyBuild installation uses the same Python executable it was
@@ -243,6 +299,9 @@ class EB_EasyBuildMeta(PythonPackage):
         """
         txt = super(EB_EasyBuildMeta, self).make_module_extra()
         txt += self.module_generator.set_environment('EB_INSTALLPYTHON', self.python_cmd)
+
+        txt += self.check_eb_import()
+
         return txt
 
     def make_module_step(self, fake=False):
