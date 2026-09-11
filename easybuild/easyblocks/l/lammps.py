@@ -54,10 +54,11 @@ from easybuild.tools.toolchain.compiler import OPTARCH_GENERIC
 
 from easybuild.easyblocks.generic.cmakemake import CMakeMake
 
+# see https://gcc.gnu.org/onlinedocs/gcc/ARM-Options.html for values that can be passed to -march
 AARCH64_MARCH_MAPPING = {
-    'neoverse_v1': 'armv8.4',
-    'neoverse_n1': 'armv8.2',
-    'neoverse_v2': 'armv8.4',
+    'neoverse_n1': 'armv8.2-a',
+    'neoverse_v1': 'armv8.4-a',
+    'neoverse_v2': 'armv9-a',
 }
 
 # lammps version, which caused the most changes. This may not be precise, but it does work with existing easyconfigs
@@ -154,7 +155,7 @@ class EB_LAMMPS(CMakeMake):
         if LooseVersion(self.cur_version) >= LooseVersion(translate_lammps_version('22Jul2025')):
             self.kokkos_cpu_mapping['zen5'] = 'ZEN5'
 
-    def get_kokkos_arch(self, cuda_cc, kokkos_arch):
+    def get_kokkos_arch(self, cuda_cc, kokkos_arch, cuda_pre_13_2=False):
         """
         Return KOKKOS ARCH in LAMMPS required format, which is 'CPU_ARCH' and 'GPU_ARCH'.
 
@@ -189,8 +190,7 @@ class EB_LAMMPS(CMakeMake):
             # for LAMMPS >= 2Aug2023: use native CPU arch
             # If we specify a CPU arch, Kokkos' CMake will add the correspondent -march and -mtune flags to the
             # compilation line, possibly overriding the ones set by EasyBuild.
-            cuda_root = get_software_root('CUDA')
-            if get_cpu_architecture() == AARCH64 and LooseVersion(os.path.basename(cuda_root)) < '13.2.0':
+            if get_cpu_architecture() == AARCH64 and cuda_pre_13_2:
                 processor_arch = self.kokkos_cpu_mapping.get(get_cpu_arch())
             else:
                 processor_arch = 'NATIVE'
@@ -402,8 +402,19 @@ class EB_LAMMPS(CMakeMake):
             if '-DFFT_PACK=' not in self.cfg['configopts']:
                 self.cfg.update('configopts', '-DFFT_PACK=array')
 
+        # check whether CUDA version older than 13.2 is used,
+        # since then we need to work around a problem with Arm NEON,
+        # see https://github.com/kokkos/kokkos/issues/7483
+        cuda_pre_13_2 = False
+        if self.cuda:
+            cuda_ver = get_software_root('CUDA')
+            if cuda_ver:
+                cuda_pre_13_2 = LooseVersion(cuda_ver) < '13.2.0'
+            else:
+                raise EasyBuildError("Could not determine CUDA version!")
+
         # detect the CPU and GPU architecture (used for Intel and Kokkos packages below)
-        processor_arch, gpu_arch = self.get_kokkos_arch(cuda_cc, self.cfg['kokkos_arch'])
+        processor_arch, gpu_arch = self.get_kokkos_arch(cuda_cc, self.cfg['kokkos_arch'], cuda_pre_13_2=cuda_pre_13_2)
 
         # INTEL package
         if processor_arch in KOKKOS_INTEL_PACKAGE_ARCH_LIST or \
@@ -430,35 +441,45 @@ class EB_LAMMPS(CMakeMake):
                 self.cfg.update('configopts', '-D%s_ENABLE_CUDA=yes' % self.kokkos_prefix)
                 if LooseVersion(self.cur_version) >= LooseVersion(self.ref_version):
                     self.cfg.update('configopts', '-D%s_ARCH_%s=yes' % (self.kokkos_prefix, processor_arch))
-                    # Disabling ARM NEON as builds on ARM results in build errors for SIMD
+
+                    # disable ARM NEON in Kokkos when building on Arm with CUDA < 13.2,
+                    # to work around build errors like ".../arm_neon.h(46): error: identifier";
                     # See https://github.com/kokkos/kokkos/issues/7483
-                    cuda_root = get_software_root('CUDA')
-                    if get_cpu_architecture() == AARCH64 and LooseVersion(os.path.basename(cuda_root)) < '13.2.0':
+                    if get_cpu_architecture() == AARCH64 and cuda_pre_13_2:
                         self.cfg.update('configopts', '-D%s_ARCH_ARM_NEON=no' % self.kokkos_prefix)
+
                     self.cfg.update('configopts', '-D%s_ARCH_%s=yes' % (self.kokkos_prefix, gpu_arch))
                 else:
                     # Older versions of Kokkos required us to tweak the C++ compiler
                     self.cfg.update('configopts', '-DCMAKE_CXX_COMPILER="%s"' % nvcc_wrapper_path)
                     self.cfg.update('configopts', '-DCMAKE_CXX_FLAGS="-ccbin $CXX $CXXFLAGS"')
                     self.cfg.update('configopts', '-D%s_ARCH="%s;%s"' % (self.kokkos_prefix, processor_arch, gpu_arch))
-                # Disabling ARM NEON as builds on ARM results in build errors for SIMD
+
+                # add -march option in $CXXFLAGS (after -mcpu=native which is there already)
+                # to disable ARM NEON when building on Arm with CUDA < 13.2,
+                # to work around build errors like ".../arm_neon.h(46): error: identifier";
                 # See https://github.com/kokkos/kokkos/issues/7483
-                if get_cpu_architecture() == AARCH64:
-                    cuda_root = get_software_root('CUDA')
-                    if LooseVersion(os.path.basename(cuda_root)) < '13.2.0':
-                        if build_option('optarch') == OPTARCH_GENERIC:
-                            march_flag = ' -march=-march=armv8-a+nosimd'
+                if get_cpu_architecture() == AARCH64 and cuda_pre_13_2:
+                    if build_option('optarch') == OPTARCH_GENERIC:
+                        march_flag = '-march=-march=armv8-a+nosimd'
+                    else:
+                        cpu_arch = get_cpu_arch()
+                        if cpu_arch in AARCH64_MARCH_MAPPING:
+                            march_flag = '-march=' + AARCH64_MARCH_MAPPING[cpu_arch]
+                            # for some LAMMPS versions we shouldn't use SVE2, so fall back to ARMv8.4 (only SVE)
+                            if any(self.version.startswith(x) for x in ['22Jul2025']):
+                                march_flag = march_flag.replace('armv9-a', 'armv8.4-a')
+
+                            march_flag += '+nosimd'
                         else:
-                            cpu_arch = get_cpu_arch()
-                            if cpu_arch in AARCH64_MARCH_MAPPING:
-                                march_flag = ' -march=%s-a+nosimd' % AARCH64_MARCH_MAPPING[cpu_arch]
-                            else:
-                                error_msg = "Specified CPU ARCH (%s) " % cpu_arch
-                                error_msg += "was not found in listed options [%s]." % AARCH64_MARCH_MAPPING
-                                raise EasyBuildError(error_msg)
-                        cxxflags = os.getenv('CXXFLAGS', '')
-                        cxxflags += march_flag
-                        env.setvar('CXXFLAGS', cxxflags)
+                            error_msg = "Specified CPU ARCH (%s) " % cpu_arch
+                            error_msg += "was not found in listed options [%s]." % AARCH64_MARCH_MAPPING
+                            raise EasyBuildError(error_msg)
+
+                    orig_cxxflags = os.getenv('CXXFLAGS', '')
+                    cxxflags = orig_cxxflags + ' ' + march_flag
+                    env.setvar('CXXFLAGS', cxxflags)
+                    self.log.info(f'Modified $CXXFLAGS to disable Arm NEON: "{cxxflags}" (was: "{orig_cxxflags}")')
             else:
                 if LooseVersion(self.cur_version) >= LooseVersion(self.ref_version):
                     self.cfg.update('configopts', '-D%s_ARCH_%s=yes' % (self.kokkos_prefix, processor_arch))
