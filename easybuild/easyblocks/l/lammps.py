@@ -46,7 +46,7 @@ from easybuild.easyblocks.kokkos import KOKKOS_LEGACY_ARCH_MAPPING, KOKKOS_CPU_M
 from easybuild.framework.easyconfig import CUSTOM, MANDATORY
 from easybuild.tools.build_log import EasyBuildError, print_warning, print_msg
 from easybuild.tools.config import build_option, IGNORE
-from easybuild.tools.filetools import copy_dir, copy_file, mkdir, read_file, which
+from easybuild.tools.filetools import apply_regex_substitutions, copy_dir, copy_file, mkdir, read_file, which
 from easybuild.tools.modules import get_software_root, get_software_version
 from easybuild.tools.run import run_shell_cmd
 from easybuild.tools.systemtools import AARCH64
@@ -54,13 +54,6 @@ from easybuild.tools.systemtools import get_avail_core_count, get_cpu_architectu
 from easybuild.tools.toolchain.compiler import OPTARCH_GENERIC
 
 from easybuild.easyblocks.generic.cmakemake import CMakeMake
-
-# see https://gcc.gnu.org/onlinedocs/gcc/ARM-Options.html for values that can be passed to -march
-AARCH64_MARCH_MAPPING = {
-    'neoverse_n1': 'armv8.2-a',
-    'neoverse_v1': 'armv8.4-a',
-    'neoverse_v2': 'armv9-a',
-}
 
 # lammps version, which caused the most changes. This may not be precise, but it does work with existing easyconfigs
 ref_version = '29Sep2021'
@@ -166,6 +159,13 @@ class EB_LAMMPS(CMakeMake):
         gpus = get_gpu_info()
         self.nvidia_gpu_found = 'NVIDIA' in gpus
 
+        # see https://gcc.gnu.org/onlinedocs/gcc/AArch64-Options.html for values that can be passed to -march
+        self.aarch64_march_mapping = {
+            'neoverse_n1': 'armv8.2-a',
+            'neoverse_v1': 'armv8.4-a',
+            'neoverse_v2': 'armv9-a',
+        }
+
     def update_kokkos_cpu_mapping(self):
         """
         Update mapping to Kokkos CPU targets based on LAMMPS version
@@ -174,6 +174,10 @@ class EB_LAMMPS(CMakeMake):
             self.kokkos_cpu_mapping['neoverse_n1'] = 'ARMV81'
             self.kokkos_cpu_mapping['neoverse_v1'] = 'ARMV81'
             self.kokkos_cpu_mapping['cortex_a72'] = 'ARMV81'
+            # we also need to replace the values for -march to avoid conflicts with compiler options used by Kokkos;
+            # see also https://gcc.gnu.org/onlinedocs/gcc/AArch64-Options.html
+            self.aarch64_march_mapping['neoverse_n1'] = 'armv8.1-a'
+            self.aarch64_march_mapping['neoverse_v1'] = 'armv8.1-a'
 
         if LooseVersion(self.cur_version) >= LooseVersion(translate_lammps_version('21sep2021')):
             self.kokkos_cpu_mapping['a64fx'] = 'A64FX'
@@ -189,6 +193,12 @@ class EB_LAMMPS(CMakeMake):
             self.kokkos_cpu_mapping['zen4'] = 'ZEN4'
         if LooseVersion(self.cur_version) >= LooseVersion(translate_lammps_version('22Jul2025')):
             self.kokkos_cpu_mapping['zen5'] = 'ZEN5'
+
+        if LooseVersion(self.cur_version) > LooseVersion(translate_lammps_version('22Jul2025')):
+            # for newer versions of LAMMPS (which include Kokkos 4.7+)
+            # we should use ARMV84_SVE in kokkos_cpu_mapping for neoverse_v1,
+            # see https://github.com/kokkos/kokkos/commit/16726efdd5cbe272fe873e0e73feb7d1befb8122
+            print_warning(f"update_kokkos_cpu_mapping function needs to be updated for LAMMPS {self.version}!")
 
     def get_kokkos_arch(self, cuda_cc, kokkos_arch, cuda_pre_13_2=False):
         """
@@ -442,7 +452,7 @@ class EB_LAMMPS(CMakeMake):
         # see https://github.com/kokkos/kokkos/issues/7483
         cuda_pre_13_2 = False
         if self.cuda:
-            cuda_ver = get_software_root('CUDA')
+            cuda_ver = get_software_version('CUDA')
             if cuda_ver:
                 cuda_pre_13_2 = LooseVersion(cuda_ver) < '13.2.0'
             else:
@@ -490,31 +500,50 @@ class EB_LAMMPS(CMakeMake):
                     self.cfg.update('configopts', '-DCMAKE_CXX_FLAGS="-ccbin $CXX $CXXFLAGS"')
                     self.cfg.update('configopts', '-D%s_ARCH="%s;%s"' % (self.kokkos_prefix, processor_arch, gpu_arch))
 
-                # add -march option in $CXXFLAGS (after -mcpu=native which is there already)
-                # to disable ARM NEON when building on Arm with CUDA < 13.2,
+                # add -march option with +nosimd to $CXXFLAGS to disable ARM NEON when building on Arm with CUDA < 13.2,
+                # and patch Kokkos script to inject +nosimd to the -march option it adds;
                 # to work around build errors like ".../arm_neon.h(46): error: identifier";
                 # See https://github.com/kokkos/kokkos/issues/7483
                 if get_cpu_architecture() == AARCH64 and cuda_pre_13_2:
                     if build_option('optarch') == OPTARCH_GENERIC:
-                        march_flag = '-march=-march=armv8-a+nosimd'
+                        march_flag = 'armv8-a+nosimd'
                     else:
                         cpu_arch = get_cpu_arch()
-                        if cpu_arch in AARCH64_MARCH_MAPPING:
-                            march_flag = '-march=' + AARCH64_MARCH_MAPPING[cpu_arch]
-                            # for some LAMMPS versions we shouldn't use SVE2, so fall back to ARMv8.4 (only SVE)
-                            if any(self.version.startswith(x) for x in ['22Jul2025']):
-                                march_flag = march_flag.replace('armv9-a', 'armv8.4-a')
+                        if cpu_arch in self.aarch64_march_mapping:
+                            march_flag = self.aarch64_march_mapping[cpu_arch]
+                            # for some LAMMPS versions we can't use ARMV9-A as target architecture yet,
+                            # because the SVE2 it implies leads to trouble
+                            if march_flag == 'armv9-a' and any(self.version.startswith(x) for x in ['22Jul2025']):
+                                march_flag = 'armv8.4-a'
 
                             march_flag += '+nosimd'
                         else:
                             error_msg = "Specified CPU ARCH (%s) " % cpu_arch
-                            error_msg += "was not found in listed options [%s]." % AARCH64_MARCH_MAPPING
+                            error_msg += "was not found in listed options [%s]." % self.aarch64_march_mapping
                             raise EasyBuildError(error_msg)
 
+                    # add -march option determined above in addition to -mcpu=native in $CXXFLAGS,
+                    # to take control of the target architecture;
+                    # if -mcpu is used in conjunction with -march (or -mtune),
+                    # those options take precedence over the appropriate part of this option;
+                    # see also https://gcc.gnu.org/onlinedocs/gcc/AArch64-Options.html
                     orig_cxxflags = os.getenv('CXXFLAGS', '')
-                    cxxflags = orig_cxxflags + ' ' + march_flag
+
+                    # strip out -mcpu=native from $CXXFLAGS, since that will clash with the -march flag being added,
+                    # resulting in warnings like "switch '-mcpu=...' conflicts with '-march=...' switch
+                    cxxflags = orig_cxxflags.replace('-mcpu=native', '')
+
+                    # add -march flag determined above to $CXXFLAGS
+                    cxxflags += ' -march=' + march_flag
+
                     env.setvar('CXXFLAGS', cxxflags)
                     self.log.info(f'Modified $CXXFLAGS to disable Arm NEON: "{cxxflags}" (was: "{orig_cxxflags}")')
+
+                    # patch lib/kokkos/cmake/kokkos_arch.cmake to append +nosimd to all '-march=armv.*' entries;
+                    # this is necessary to avoid that an -march option that is added by Kokkos overrules
+                    # what we added to $CXXFLAGS above
+                    kokkos_arch_cmake = os.path.join('lib', 'kokkos', 'cmake', 'kokkos_arch.cmake')
+                    apply_regex_substitutions(kokkos_arch_cmake, [(r'-march=(armv[^\s]+)', r'-march=\1+nosimd')])
             else:
                 if LooseVersion(self.cur_version) >= LooseVersion(self.ref_version):
                     self.cfg.update('configopts', '-D%s_ARCH_%s=yes' % (self.kokkos_prefix, processor_arch))
